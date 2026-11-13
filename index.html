@@ -355,24 +355,48 @@ function typeFor(w, mode){
 /* ---------- Озвучка (голос браузера, без интернета) ---------- */
 var SOUND = load('sound', true);
 var zhVoice = null;
+var zhVoices = [];
 function pickVoice(){
   if (!window.speechSynthesis) return;
   var vs = window.speechSynthesis.getVoices() || [];
-  var cn = vs.filter(function(v){ return /^zh[-_]CN/i.test(v.lang); });
-  /* сначала обычные дикторские голоса, без шуточных вроде Grandpa */
-  zhVoice = cn.find(function(v){ return /Tingting|Ting-Ting|Google|Li-mu|Yu-shu|Xiaoxiao|Yunxi/i.test(v.name); }) ||
-            cn.find(function(v){ return !/Grandma|Grandpa|Rocko|Shelley|Sandy|Reed/i.test(v.name); }) || cn[0] ||
-            vs.find(function(v){ return /^(zh|cmn)/i.test(v.lang) && !/HK|yue/i.test(v.lang); }) || null;
+  var odd = /Grandma|Grandpa|Rocko|Shelley|Sandy|Reed|Eddy|Flo/i;
+  var cn = vs.filter(function(v){ return /^zh[-_]CN/i.test(v.lang) || /^cmn/i.test(v.lang); });
+  if (!cn.length) cn = vs.filter(function(v){ return /^zh/i.test(v.lang) && !/HK|yue/i.test(v.lang); });
+  /* голос с самого устройства надёжнее: интернет-голоса Google в Chrome часто молчат (VPN, сеть) */
+  function score(v){ return (v.localService ? 0 : 10) + (/Tingting|Ting-Ting|Li-mu|Yu-shu|Meijia|Xiaoxiao|Yunxi|Huihui|Kangkang|Yaoyao/i.test(v.name) ? 0 : 2) + (odd.test(v.name) ? 3 : 0); }
+  zhVoices = cn.slice().sort(function(a, b){ return score(a) - score(b); });
+  zhVoice = zhVoices[0] || null;
 }
 if (window.speechSynthesis) { pickVoice(); try { window.speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch(e){ window.speechSynthesis.onvoiceschanged = pickVoice; } }
 var lastUtter = null; /* держим ссылку, иначе браузер может «потерять» фразу и замолчать */
 function say(text, force){
   if ((!SOUND && !force) || !window.speechSynthesis || !text) return;
+  if (!zhVoices.length) pickVoice();
+  sayWith(text, zhVoice, 0);
+}
+function sayWith(text, voice, tries){
   var synth = window.speechSynthesis;
   try {
     var u = new SpeechSynthesisUtterance(text);
-    u.lang = 'zh-CN'; if (zhVoice) u.voice = zhVoice; u.rate = 0.85;
-    u.onend = u.onerror = function(){ if (lastUtter === u) lastUtter = null; };
+    u.lang = 'zh-CN'; if (voice) u.voice = voice; u.rate = 0.85; u._try = tries;
+    u.onend = function(){ if (lastUtter === u) lastUtter = null; };
+    u.onerror = function(e){
+      if (lastUtter === u) lastUtter = null;
+      var why = e && e.error;
+      if (why === 'interrupted' || why === 'canceled' || (u._try || 0) >= 2) return;
+      /* голос не сработал: пробуем следующий китайский, потом голос по умолчанию */
+      var next = zhVoices[zhVoices.indexOf(u.voice) + 1] || null;
+      sayWith(text, u.voice ? next : null, (u._try || 0) + 1);
+    };
+    u.onstart = function(){ u._started = true; };
+    /* голос молчит и не сообщает об ошибке: через 1,5 с пробуем другой */
+    setTimeout(function(){
+      if (u._started || lastUtter !== u || tries >= 2) return;
+      try { synth.cancel(); } catch(e){}
+      lastUtter = null;
+      var next = zhVoices[zhVoices.indexOf(u.voice) + 1] || null;
+      sayWith(text, u.voice ? next : null, tries + 1);
+    }, 1500);
     var prev = lastUtter;
     lastUtter = u; u._t = Date.now();
     if (synth.paused) synth.resume();
